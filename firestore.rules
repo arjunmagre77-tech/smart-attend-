@@ -1,0 +1,91 @@
+// firestore.rules
+// Deploy with: firebase deploy --only firestore:rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ──────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && getUserData().role == 'admin' && getUserData().isActive == true;
+    }
+
+    function isTeacher() {
+      return isSignedIn() && getUserData().role == 'teacher' && getUserData().isActive == true;
+    }
+
+    function isAdminOrTeacher() {
+      return isAdmin() || isTeacher();
+    }
+
+    // ── /students ─────────────────────────────────────────
+    // Admins: full CRUD
+    // Teachers: read only (their authorized classes)
+    match /students/{studentId} {
+      allow read: if isAdminOrTeacher();
+      allow create, update: if isAdmin();
+      allow delete: if false; // Never hard-delete; set isActive=false instead
+    }
+
+    // ── /classes ──────────────────────────────────────────
+    match /classes/{classId} {
+      allow read: if isAdminOrTeacher();
+      allow write: if isAdmin();
+    }
+
+    // ── /attendance ───────────────────────────────────────
+    // Created via server-side API (Firebase Admin), not client SDK.
+    // Teachers can read, admins can read/correct.
+    match /attendance/{attendanceId} {
+      allow read: if isAdminOrTeacher();
+      allow create: if false;  // Only via Admin SDK (server route)
+      allow update: if isAdmin(); // Manual corrections by admin only
+      allow delete: if false;
+
+      // Event deduplication subcollection
+      match /events/{eventId} {
+        allow read, write: if false; // Server-only via Admin SDK
+      }
+    }
+
+    // ── /notifications ────────────────────────────────────
+    match /notifications/{notifId} {
+      allow read: if isAdminOrTeacher();
+      allow create, update: if false; // Server-only
+      allow delete: if false;
+    }
+
+    // ── /devices ──────────────────────────────────────────
+    // Device records contain hashed secrets — admin read/write only
+    match /devices/{deviceId} {
+      allow read, write: if isAdmin();
+    }
+
+    // ── /users ────────────────────────────────────────────
+    match /users/{userId} {
+      // Users can read their own document
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      // Only admins can create/update user roles
+      allow write: if isAdmin();
+    }
+
+    // ── /settings ─────────────────────────────────────────
+    match /settings/{docId} {
+      allow read: if isAdminOrTeacher();
+      allow write: if isAdmin();
+    }
+
+    // Deny everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
